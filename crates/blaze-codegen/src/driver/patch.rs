@@ -483,6 +483,15 @@ impl<'a, B: Prepare> Build<'a, B> {
         // build is refused with the front end's reason (`refused`; rule no-fallback), and
         // the kept walk goes back as it was, so the refusal stands until its cause is gone.
         let seen = walked.seen;
+        // A walk kept from before this front end's database first noted describes was made
+        // against another database's notes (the front end of another command, made anew for
+        // this build): not this front end's lost changed set but a walk it never kept. It runs
+        // whole, as a walk of other roots does.
+        if let (Some(seen), Some(noted)) = (seen, self.frontend.notes_since())
+            && seen < noted
+        {
+            return Err("the kept walk is from before this front end's database noted describes");
+        }
         if walked.keep.takes_world {
             self.frontend.resume_world(
                 walked.world.as_ref().ok_or("the front end kept no world checkpoint")?,

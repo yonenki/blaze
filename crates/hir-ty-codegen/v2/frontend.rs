@@ -1420,6 +1420,10 @@ impl Frontend for HirFrontend<'_> {
     /// changed keys (the view is none of this database's, or the set is asked for inside a
     /// query while the engine's walk is due). The driver refuses a build whose front end
     /// answers Unknown: no walk asks of everything in the set's place.
+    fn notes_since(&self) -> Option<u64> {
+        self.witnesses.as_ref().map(|it| it.since)
+    }
+
     fn changed_since(&self, view: u64) -> Changed<HirInstance, HirStatic> {
         use blaze_query::db::{Changed as Keys, View};
         let Some(witnesses) = &self.witnesses else {

@@ -369,6 +369,15 @@ pub trait Frontend: Sync {
         None
     }
 
+    /// The first view this front end's changed sets cover ([`Self::changed_since`] names what
+    /// changed only from it on): the view at which its database first noted describes. A walk
+    /// kept from an earlier view was made against another database's notes (a front end made
+    /// anew for this build, after one of another command), so it is not this front end's to
+    /// patch and the walk runs whole. `None` for a front end whose sets cover every view.
+    fn notes_since(&self) -> Option<u64> {
+        None
+    }
+
     /// What this front end says may be other than it was when its view was `view`
     /// ([`Self::view`], as a build read it before its walk): the functions whose describe
     /// may be, the instances whose count may be, the statics whose describe may be
