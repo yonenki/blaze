@@ -1255,13 +1255,13 @@ impl TestRun {
             };
             let Some(report) = test::report(&suite.name, &done) else { continue };
             let Some(name) = done.test.as_deref() else {
-                self.ok = false;
+                // A binary run whole as libtest's threads ([`TestMode::Threads`]: every binary
+                // on Windows, which has no fork server, and a package that opts out): its result
+                // is the binary's (the queue's contract, `Finished::test` is `None`). It stands
+                // as the binary's result; nothing of it is kept per test, so its selection goes
+                // back and the next run asks again.
+                self.ok &= passed;
                 out.push(Response::TestResult(result(report, executable, outside, None)));
-                // alloc: error path
-                out.push(refused(format!(
-                    "the test binary `{}` was run whole, and blaze selects and keeps its tests one by one",
-                    suite.name
-                )));
                 suite.give_back(&job.shared.selectors);
                 continue;
             };
