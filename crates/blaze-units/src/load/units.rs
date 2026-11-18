@@ -132,11 +132,12 @@ pub(crate) fn units(
         Ok(it) => it,
         Err(error) => return Ok(fail(error)),
     };
-    let targets = Targets { reads: &resolved.reads, host, target: target.as_ref() };
-    let kinds = match target {
-        Some(target) => vec![CompileKind::Target(InternedString::new(&target.triple))],
-        None => vec![CompileKind::Host],
-    };
+    let targets =
+        Targets { reads: &resolved.reads, host, target: target.as_ref(), macro_wasm: macro_wasm.as_ref() };
+    // The target's units are resolved as a `Target` kind even when it is the host's platform:
+    // `CompileKind::Host` is then the host dependencies' alone ([`Targets::platform_activated`]),
+    // which a proc macro's dependencies built for `macro_wasm` share.
+    let kinds = vec![CompileKind::Target(InternedString::new(&target.as_ref().unwrap_or(host).triple))];
     let opts = FeatureOpts::new(resolved.behavior, resolved.has_dev_units, ForceAllTargets::No);
     let members: Vec<_> = resolved
         .feature_members
@@ -848,6 +849,10 @@ struct Targets<'a> {
     reads: &'a HashMap<PackageId, Read, Global>,
     host: &'a Platformed,
     target: Option<&'a Platformed>,
+    /// The platform proc macros are built for: the host's features (cargo's `FeaturesFor::HostDep`)
+    /// are a proc macro's dependencies' too, which are built for it (`graph.rs`, `Kind::MacroWasm`),
+    /// so a dependency only it activates (`cfg(target_os = "wasi")`) is resolved with them.
+    macro_wasm: Option<&'a Platformed>,
 }
 
 impl PackageTargets for Targets<'_> {
@@ -861,7 +866,9 @@ impl PackageTargets for Targets<'_> {
 
     fn platform_activated(&self, platform: &Platform, kind: CompileKind) -> bool {
         match kind {
-            CompileKind::Host => self.host.activates(platform),
+            CompileKind::Host => {
+                self.host.activates(platform) || self.macro_wasm.is_some_and(|it| it.activates(platform))
+            }
             CompileKind::Target(_) => self.target.unwrap_or(self.host).activates(platform),
         }
     }
