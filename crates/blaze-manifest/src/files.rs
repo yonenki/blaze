@@ -54,18 +54,31 @@ pub enum FileKind {
     Other,
 }
 
-/// The machine's file system, as `std::fs` sees it.
+/// The machine's file system, as `std::fs` sees it. A path may be the daemon's name of one
+/// (`/C:/a` on Windows), as a path dependency's `SourceId` gives it back
+/// (`blaze_source::SourceId::local_path`): it is opened as the system names it
+/// ([`blaze_core::platform::path::host`]).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Disk;
+
+/// `path` as the system opens it: on Windows a daemon name (rooted at `/`) through
+/// [`blaze_core::platform::path::host`]; any other path as it is.
+fn on_host(path: &Path) -> Cow<'_, Path> {
+    match path.to_str() {
+        // alloc: the system's path of a daemon name, once a call
+        Some(name) if cfg!(windows) && name.starts_with('/') => Cow::Owned(blaze_core::platform::path::host(name)),
+        _ => Cow::Borrowed(path),
+    }
+}
 
 impl Files for Disk {
     fn read(&self, path: &Path) -> std::io::Result<Cow<'_, [u8]>> {
         // alloc: the file's bytes, read from the disk
-        std::fs::read(path).map(Cow::Owned)
+        std::fs::read(on_host(path)).map(Cow::Owned)
     }
 
     fn kind(&self, path: &Path) -> Option<FileKind> {
-        let meta = std::fs::metadata(path).ok()?;
+        let meta = std::fs::metadata(on_host(path)).ok()?;
         Some(if meta.is_dir() {
             FileKind::Dir
         } else if meta.is_file() {
@@ -77,7 +90,7 @@ impl Files for Disk {
 
     fn list(&self, path: &Path) -> std::io::Result<Vec<(String, bool)>> {
         let mut names = Vec::new();
-        for entry in std::fs::read_dir(path)? {
+        for entry in std::fs::read_dir(on_host(path))? {
             let entry = entry?;
             let Ok(name) = entry.file_name().into_string() else { continue };
             names.push((name, entry.file_type().is_ok_and(|t| t.is_dir())));
@@ -86,8 +99,17 @@ impl Files for Disk {
         Ok(names)
     }
 
+    /// A daemon name comes back as the daemon names the resolved path, so it stays comparable
+    /// with the names around it; a system path as the system resolves it.
     fn canonicalize(&self, path: &Path) -> std::io::Result<PathBuf> {
-        path.canonicalize()
+        let host = on_host(path);
+        let resolved = host.canonicalize()?;
+        match host {
+            Cow::Borrowed(_) => Ok(resolved),
+            Cow::Owned(_) => blaze_core::platform::path::daemon(&resolved)
+                .map(PathBuf::from)
+                .map_err(|why| std::io::Error::new(std::io::ErrorKind::InvalidData, why)),
+        }
     }
 }
 

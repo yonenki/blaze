@@ -121,12 +121,12 @@ fn here() -> Result<Here, String> {
         for (_, member) in ws.members() {
             members.push(member.package_id.name.clone());
             // A member's direct path dependencies: one outside the root is read from a
-            // directory nothing pins.
+            // directory nothing pins. Its `SourceId` names it as the daemon does (`/C:/a` on
+            // Windows); the root is the system's path of the working directory.
             for dep in &member.dependencies {
-                if dep.source_id.is_path()
-                    && let Some(path) = dep.source_id.local_path()
-                    && !path.starts_with(&root)
-                {
+                let Some(path) = dep.source_id.local_path() else { continue };
+                let path = path.to_str().map_or_else(|| path.clone(), blaze_core::platform::path::host);
+                if !path.starts_with(&root) {
                     outside.push(OutsidePath { package: dep.name.clone(), path: path.display().to_string() });
                 }
             }
