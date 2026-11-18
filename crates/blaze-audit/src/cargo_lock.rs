@@ -158,30 +158,40 @@ impl Lock {
         Ok(Lock { packages })
     }
 
-    /// The one package `dep` (`name`, `name version` or `name version (source)`) names.
+    /// The one package `dep` (`name`, `name version` or `name version (source)`) names. A
+    /// path package's source is never written, so with no source given and more than one
+    /// package of that name and version it names the one path package, as cargo reads it
+    /// (`cargo::core::resolver::encode`, `lookup_id`).
     fn find(packages: &[Package], of: &str, dep: &str) -> Result<usize, LockRefused> {
         let dangling = || LockRefused::Dangling { package: of.to_owned(), dep: dep.to_owned() };
         let mut parts = dep.splitn(3, ' ');
         let name = parts.next().unwrap_or_default();
         let version = parts.next().map(semver::Version::parse).transpose().map_err(|_| dangling())?;
         let source = parts.next().map(|it| it.trim_start_matches('(').trim_end_matches(')'));
-        let mut hits = packages.iter().enumerate().filter(|(_, it)| {
-            it.name == name
-                && version.as_ref().is_none_or(|v| &it.version == v)
-                && source.is_none_or(|s| match &it.source {
-                    Source::Registry { url, .. } => url == s,
-                    Source::Git { url, query, commit } => {
-                        git_source(s).is_some_and(|(u, q, c)| {
-                            &u == url && &q == query && (c.is_empty() || &c == commit)
-                        })
-                    }
-                    Source::Path => false,
-                })
-        });
-        let (at, _) = hits.next().ok_or_else(dangling)?;
-        if hits.next().is_some() {
-            return Err(dangling());
+        let hits = || {
+            packages.iter().enumerate().filter(|(_, it)| {
+                it.name == name
+                    && version.as_ref().is_none_or(|v| &it.version == v)
+                    && source.is_none_or(|s| match &it.source {
+                        Source::Registry { url, .. } => url == s,
+                        Source::Git { url, query, commit } => {
+                            git_source(s).is_some_and(|(u, q, c)| {
+                                &u == url && &q == query && (c.is_empty() || &c == commit)
+                            })
+                        }
+                        Source::Path => false,
+                    })
+            })
+        };
+        /// The index of the one item `hits` yields; `None` for none or more than one.
+        fn one<'a>(mut hits: impl Iterator<Item = (usize, &'a Package)>) -> Option<usize> {
+            let (at, _) = hits.next()?;
+            hits.next().is_none().then_some(at)
         }
-        Ok(at)
+        if let Some(at) = one(hits()) {
+            return Ok(at);
+        }
+        let path = source.is_none().then(|| one(hits().filter(|(_, it)| it.source == Source::Path))).flatten();
+        path.ok_or_else(dangling)
     }
 }

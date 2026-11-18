@@ -9,7 +9,7 @@ use semver::{Op, Version, VersionReq};
 
 use crate::advisory::{Advisory, AdvisoryRefused, Database, MOST_ADVISORY_BYTES};
 use crate::audit::{DatabaseInput, Index, Input, audit, verify_database};
-use crate::cargo_lock::{Lock, LockRefused, MOST_LOCK_BYTES};
+use crate::cargo_lock::{Lock, LockRefused, MOST_LOCK_BYTES, Source};
 use crate::date::Date;
 use crate::fetch::{Effect, Event, Fetch, Refused};
 use crate::pins::{DatabasePin, GitPin, SourcePins};
@@ -279,6 +279,27 @@ fn an_oversized_advisory_is_refused_before_it_is_read() {
 fn an_oversized_lock_is_refused_before_it_is_read() {
     let text = vec![b'#'; MOST_LOCK_BYTES + 1];
     assert_eq!(Lock::parse(&text), Err(LockRefused::TooBig { bytes: MOST_LOCK_BYTES + 1 }));
+}
+
+/// A path package and a git package of one name and version: the git one's dependents name
+/// it with its source, the path one's name it without, as cargo writes a lock; another git
+/// package of the same name and version leaves the sourceless name the path one's.
+#[test]
+fn a_sourceless_name_of_a_path_and_a_git_package_names_the_path_one() {
+    let git = format!("git+{FORK}?rev={COMMIT}#{COMMIT}");
+    let text = format!(
+        "version = 4\n\n[[package]]\nname = \"app\"\nversion = \"0.1.0\"\ndependencies = [\n \"contract 0.1.0\",\n \"setup\",\n]\n\n\
+         [[package]]\nname = \"contract\"\nversion = \"0.1.0\"\n\n\
+         [[package]]\nname = \"contract\"\nversion = \"0.1.0\"\nsource = \"{git}\"\n\n\
+         [[package]]\nname = \"setup\"\nversion = \"0.0.1\"\nsource = \"{git}\"\ndependencies = [\n \"contract 0.1.0 (git+{FORK}?rev={COMMIT})\",\n]\n"
+    );
+    let lock = Lock::parse(text.as_bytes()).unwrap();
+    let app = &lock.packages[0];
+    let named: Vec<_> = app.deps.iter().map(|at| (&lock.packages[*at].name[..], &lock.packages[*at].source)).collect();
+    assert_eq!(named, [("contract", &Source::Path), ("setup", &lock.packages[3].source)]);
+    assert!(matches!(lock.packages[lock.packages[3].deps[0]].source, Source::Git { .. }));
+    let other = text.replace("[[package]]\nname = \"setup\"", "[[package]]\nname = \"contract\"\nversion = \"0.1.0\"\nsource = \"git+https://example.com/o/other#575ed6b8ceb79ffaf247ecf7e34333876b0d5be4\"\n\n[[package]]\nname = \"setup\"");
+    assert!(Lock::parse(other.as_bytes()).is_ok(), "a sourceless name still names the one path package");
 }
 
 // ---------------------------------------------------------------------------------------
