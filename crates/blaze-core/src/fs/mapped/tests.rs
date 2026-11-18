@@ -164,17 +164,31 @@ fn a_mapped_generation_excludes_writers_in_both_open_orders() {
     // SAFETY: never write bytes under a view, including if the expected refusal is broken.
     let map = || unsafe { Mapped::open(&path) };
     assert_eq!(map().unwrap_err().raw_os_error(), Some(32));
-    let part = || super::map_extent(&path, crate::Extent::Range { at: 1, len: 3 });
-    assert_eq!(part().unwrap_err().raw_os_error(), Some(32));
     drop(write);
     let read = map().unwrap();
-    let range = part().unwrap();
     assert_eq!(writer().unwrap_err().raw_os_error(), Some(32));
     drop(read);
-    assert_eq!(range.bytes(), b"ene");
-    assert_eq!(writer().unwrap_err().raw_os_error(), Some(32));
-    drop(range);
     writer().unwrap();
+}
+
+/// `Effect::Map`'s mapping lets the file be appended to past every byte mapped, as the store
+/// does to a pack it has mapped: its commit opens the pack, cuts it to what is committed (the
+/// length mapped) and writes past it.
+#[cfg(windows)]
+#[test]
+fn an_effect_mapping_lets_the_store_append() {
+    use std::io::{Seek as _, SeekFrom, Write as _};
+    let dir = dir("appendable");
+    let path = dir.join("pack");
+    std::fs::write(&path, b"generation").unwrap();
+    let range = super::map_extent(&path, crate::Extent::Range { at: 1, len: 3 }).unwrap();
+    let mut append = std::fs::File::options().write(true).open(&path).unwrap();
+    append.set_len(10).unwrap();
+    append.seek(SeekFrom::End(0)).unwrap();
+    append.write_all(b" two").unwrap();
+    drop(append);
+    assert_eq!(range.bytes(), b"ene");
+    assert_eq!(std::fs::read(&path).unwrap(), b"generation two");
 }
 
 #[test]

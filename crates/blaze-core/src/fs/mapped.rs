@@ -17,8 +17,9 @@
 //! slice. A range starts at its offset rounded down to the page (64 KiB on Windows); the bytes
 //! before it ([`Mapped::slack`]) are mapped but never in the slice.
 //!
-//! Another process may still write or cut a caller-supplied file. A path-opened Windows
-//! mapping denies writers for the lifetime of the view. Writing mapped bytes in place
+//! Another process may still write or cut a caller-supplied file. On Windows a generation
+//! opened by path with [`MapOptions::open`] denies writers for the lifetime of the view; an
+//! [`crate::Effect::Map`] mapping admits them, since its file is appended to. Writing mapped bytes in place
 //! breaks [`MapOptions::map`]'s contract: the bytes under a live `&[u8]` change, which a reader
 //! sees as different bytes and its content-hash check refuses. Cutting one short makes a read
 //! of a page past the new end fault: `SIGBUS` on Unix, `EXCEPTION_IN_PAGE_ERROR` on Windows
@@ -48,7 +49,10 @@ pub(crate) fn map_extent(path: &Path, extent: crate::Extent) -> io::Result<crate
     // (it may be appended to, past every byte mapped); the store and the image replace a file
     // only by renaming another over it. Broken, a reader sees changed bytes (refused by its hash
     // check) or stops at a `SIGBUS` (the module doc).
-    let mapped = unsafe { MapOptions::new().open_extent(path, extent) }?;
+    // `Seal::Appendable`: the store appends to a pack it has mapped (its commit opens the pack
+    // to cut it to what is committed, then writes past it), which a sealed handle refuses on
+    // Windows with a sharing violation (os error 32) and the store stops.
+    let mapped = unsafe { MapOptions::new().open_extent(path, extent, Seal::Appendable) }?;
     Ok(crate::Mapping::file(mapped))
 }
 
@@ -67,6 +71,16 @@ pub enum Advice {
     Random,
     /// Soon read whole: read ahead now, without waiting.
     WillNeed,
+}
+
+/// Whether a path-opened mapping keeps writers out while it lives: what Windows' share mode
+/// enforces (Unix has no such mode, and the contract alone holds there).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Seal {
+    /// A generation that is never written again ([`MapOptions::open`]: the daemon's image).
+    NoWriters,
+    /// A file appended to past every byte mapped ([`crate::Effect::Map`]: the store's packs).
+    Appendable,
 }
 
 /// How a file is mapped: [`MapOptions::new`], changed by the builders, then
@@ -126,20 +140,29 @@ impl MapOptions {
     /// As [`Mapped::map`].
     pub unsafe fn open(self, path: &Path) -> io::Result<Mapped> {
         // SAFETY: the caller's map contract.
-        unsafe { self.open_extent(path, crate::Extent::Whole) }
+        unsafe { self.open_extent(path, crate::Extent::Whole, Seal::NoWriters) }
     }
 
-    unsafe fn open_extent(self, path: &Path, extent: crate::Extent) -> io::Result<Mapped> {
+    unsafe fn open_extent(self, path: &Path, extent: crate::Extent, seal: Seal) -> io::Result<Mapped> {
         let mut open = File::options();
         open.read(true);
         #[cfg(windows)]
         {
             use std::os::windows::fs::OpenOptionsExt as _;
-            use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_DELETE, FILE_SHARE_READ};
-            // Deny an in-place writer (including an already open writable section), not a
-            // reader or a publisher replacing this generation's name.
-            open.share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE);
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+            };
+            // Sealed: deny an in-place writer (including an already open writable section), not
+            // a reader or a publisher replacing this generation's name. Appendable: an appender
+            // past every byte mapped is the mapping's contract ([`MapOptions::map`]), so writers
+            // may open the file.
+            open.share_mode(match seal {
+                Seal::NoWriters => FILE_SHARE_READ | FILE_SHARE_DELETE,
+                Seal::Appendable => FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            });
         }
+        #[cfg(not(windows))]
+        let _ = seal;
         let file = open.open(path)?;
         // SAFETY: the caller's contract, which `map` states.
         let (at, len) = match extent {
